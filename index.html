@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="tr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Turbo Yol</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none}
+html,body{margin:0;height:100%;background:#0b0f19;overflow:hidden;font-family:system-ui,sans-serif;color:#fff;touch-action:none}
+canvas{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);background:#222}
+.scr{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;gap:12px;background:rgba(8,12,24,.88);z-index:5;padding:20px;overflow:auto}
+.scr.on{display:flex}
+h1{margin:0;font-size:42px;letter-spacing:2px;color:#ffd166}
+h2{margin:0 0 6px}
+button{font-size:20px;padding:14px 30px;border:0;border-radius:14px;background:#06d6a0;color:#04221a;font-weight:700;min-width:220px}
+button.sec{background:#2b3550;color:#fff}
+.row{display:flex;justify-content:space-between;align-items:center;width:100%;max-width:340px;gap:10px;font-size:17px}
+select,input[type=range]{font-size:16px;max-width:170px}
+select{padding:6px;border-radius:8px}
+.colors{display:flex;gap:8px}
+.colors span{width:30px;height:30px;border-radius:50%;border:3px solid transparent}
+.colors span.sel{border-color:#fff}
+#hud{position:absolute;top:10px;left:0;right:0;display:flex;justify-content:space-between;padding:0 16px;font-weight:700;font-size:20px;z-index:3;pointer-events:none;text-shadow:0 2px 4px #000}
+.small{font-size:14px;opacity:.75;text-align:center}
+</style></head><body>
+<canvas id="c"></canvas>
+<div id="hud"><span id="sc">0 m</span><span id="co">🪙 0</span></div>
+
+<div class="scr on" id="menu">
+  <h1>🏎️ TURBO YOL</h1>
+  <div class="small">Telefonu sağa/sola yatır, arabayı yönlendir</div>
+  <div class="small" id="best"></div>
+  <button id="play">▶ OYNA</button>
+  <button class="sec" id="setb">⚙️ Ayarlar</button>
+</div>
+
+<div class="scr" id="set">
+  <h2>⚙️ Ayarlar</h2>
+  <div class="row">Kontrol
+    <select id="mode"><option value="tilt">Sensör (eğme)</option><option value="touch">Dokunmatik</option></select></div>
+  <div class="row">Hassasiyet <input type="range" id="sens" min="0.4" max="2.5" step="0.1"></div>
+  <div class="row">Yönü ters çevir <input type="checkbox" id="inv"></div>
+  <div class="row">Zorluk
+    <select id="diff"><option value="easy">Kolay</option><option value="normal">Normal</option><option value="hard">Zor</option></select></div>
+  <div class="row">Araba rengi <div class="colors" id="colors"></div></div>
+  <div class="row">Ses <input type="checkbox" id="snd"></div>
+  <div class="row">Titreşim <input type="checkbox" id="vib"></div>
+  <button class="sec" id="cal">🎯 Sensörü Kalibre Et</button>
+  <div class="small" id="calmsg">Telefonu rahat tuttuğun pozisyonda kalibre et</div>
+  <button id="back">✔ Kaydet ve Geri</button>
+</div>
+
+<div class="scr" id="over">
+  <h1 style="color:#ef476f">KAZA!</h1>
+  <div id="res" style="font-size:22px;text-align:center"></div>
+  <button id="again">🔁 Tekrar</button>
+  <button class="sec" id="home">🏠 Menü</button>
+</div>
+
+<script>
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+const W=360,H=640,RL=40,RR=320;
+cv.width=W;cv.height=H;
+function fit(){const s=Math.min(innerWidth/W,innerHeight/H);cv.style.width=W*s+'px';cv.style.height=H*s+'px'}
+addEventListener('resize',fit);fit();
+
+const COLORS=['#e63946','#4cc9f0','#ffd166','#06d6a0','#b388ff','#ffffff'];
+const def={sens:1.2,inv:false,mode:'tilt',diff:'normal',color:COLORS[0],snd:true,vib:true,off:0,best:0};
+let S=Object.assign({},def);
+try{Object.assign(S,JSON.parse(localStorage.getItem('turbo')||'{}'))}catch(e){}
+const save=()=>{try{localStorage.setItem('turbo',JSON.stringify(S))}catch(e){}};
+
+// Sensör
+let gamma=0,hasSensor=false;
+addEventListener('deviceorientation',e=>{if(e.gamma!=null){hasSensor=true;gamma=e.gamma}});
+let touchDir=0;
+cv.addEventListener('touchstart',tp);cv.addEventListener('touchmove',tp);
+cv.addEventListener('touchend',()=>touchDir=0);
+function tp(e){const t=e.touches[0];touchDir=t.clientX<innerWidth/2?-1:1;e.preventDefault()}
+const keys={};addEventListener('keydown',e=>keys[e.key]=1);addEventListener('keyup',e=>keys[e.key]=0);
+
+// Ses
+let ac=null;
+function beep(f,d,t='square',v=.08){if(!S.snd)return;try{ac=ac||new(window.AudioContext||window.webkitAudioContext)();
+const o=ac.createOscillator(),g=ac.createGain();o.type=t;o.frequency.value=f;g.gain.value=v;
+o.connect(g);g.connect(ac.destination);o.start();g.gain.exponentialRampToValueAtTime(.0001,ac.currentTime+d);o.stop(ac.currentTime+d)}catch(e){}}
+const vibr=ms=>{if(S.vib&&navigator.vibrate)navigator.vibrate(ms)};
+
+// Oyun durumu
+const DIFF={easy:{acc:8,max:480,gap:1.3},normal:{acc:12,max:620,gap:1},hard:{acc:18,max:800,gap:.75}};
+let st='menu',car,obs,coins,speed,dist,got,lineOff,nextO,nextC,shake=0,parts=[],sideOff=0;
+function reset(){car={x:180,y:520,w:34,h:60,tilt:0};obs=[];coins=[];speed=220;dist=0;got=0;lineOff=0;nextO=300;nextC=500;parts=[];shake=0}
+
+function carSprite(x,y,w,h,col,tilt){
+  ctx.save();ctx.translate(x,y);ctx.rotate(tilt||0);
+  ctx.fillStyle='rgba(0,0,0,.35)';ctx.fillRect(-w/2+4,-h/2+5,w,h);
+  ctx.fillStyle=col;rr(-w/2,-h/2,w,h,8);ctx.fill();
+  ctx.fillStyle='rgba(20,30,50,.85)';rr(-w/2+5,-h/2+14,w-10,14,3);ctx.fill();
+  rr(-w/2+6,h/2-18,w-12,9,3);ctx.fill();
+  ctx.fillStyle='rgba(255,255,255,.25)';ctx.fillRect(-2,-h/2+3,4,h-6);
+  ctx.fillStyle='#fff7b0';ctx.fillRect(-w/2+3,-h/2+1,7,4);ctx.fillRect(w/2-10,-h/2+1,7,4);
+  ctx.fillStyle='#ff3b3b';ctx.fillRect(-w/2+3,h/2-4,7,3);ctx.fillRect(w/2-10,h/2-4,7,3);
+  ctx.fillStyle='#111';[[-w/2-3,-h/2+8],[w/2-1,-h/2+8],[-w/2-3,h/2-20],[w/2-1,h/2-20]].forEach(p=>ctx.fillRect(p[0],p[1],4,13));
+  ctx.restore();
+}
+function rr(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath()}
+
+function steerInput(){
+  let v=0;
+  if(S.mode==='tilt'&&hasSensor)v=Math.max(-1,Math.min(1,(gamma-S.off)/22));
+  else v=touchDir;
+  if(keys.ArrowLeft||keys.a)v=-1;if(keys.ArrowRight||keys.d)v=1;
+  return S.inv?-v:v;
+}
+
+function update(dt){
+  const D=DIFF[S.diff];
+  speed=Math.min(D.max,speed+D.acc*dt);
+  dist+=speed*dt;lineOff=(lineOff+speed*dt)%60;sideOff=(sideOff+speed*dt)%80;
+  const v=steerInput();
+  car.x+=v*S.sens*250*dt;
+  car.tilt+=((v*.25)-car.tilt)*Math.min(1,dt*10);
+  car.x=Math.max(RL+car.w/2+4,Math.min(RR-car.w/2-4,car.x));
+  nextO-=speed*dt;nextC-=speed*dt;
+  if(nextO<=0){
+    const w=34;obs.push({x:RL+w/2+10+Math.random()*(RR-RL-w-20),y:-80,w:w,h:60,v:90+Math.random()*80,c:['#3a86ff','#fb5607','#8338ec','#2ec4b6','#adb5bd','#f72585'][Math.random()*6|0]});
+    nextO=(260+Math.random()*220)*D.gap*(1-Math.min(.35,speed/2500));
+  }
+  if(nextC<=0){coins.push({x:RL+20+Math.random()*(RR-RL-40),y:-30});nextC=250+Math.random()*350}
+  obs.forEach(o=>o.y+=(speed-o.v)*dt);
+  coins.forEach(c=>c.y+=speed*dt);
+  obs=obs.filter(o=>o.y<H+90);coins=coins.filter(c=>c.y<H+30);
+  for(const o of obs){
+    if(Math.abs(o.x-car.x)<(o.w+car.w)/2-5&&Math.abs(o.y-car.y)<(o.h+car.h)/2-6){crash();return}
+  }
+  coins=coins.filter(c=>{
+    if(Math.abs(c.x-car.x)<26&&Math.abs(c.y-car.y)<36){got++;beep(900,.12,'sine');vibr(15);
+      for(let i=0;i<8;i++)parts.push({x:c.x,y:c.y,vx:(Math.random()-.5)*200,vy:(Math.random()-.5)*200,l:.4,c:'#ffd166'});return false}return true});
+  parts.forEach(p=>{p.x+=p.vx*dt;p.y+=p.vy*dt;p.l-=dt});parts=parts.filter(p=>p.l>0);
+  if(Math.random()<.5)parts.push({x:car.x+(Math.random()-.5)*14,y:car.y+car.h/2,vx:(Math.random()-.5)*20,vy:60,l:.3,c:'rgba(200,200,200,.5)'});
+  document.getElementById('sc').textContent=score()+' m';
+  document.getElementById('co').textContent='🪙 '+got;
+}
+const score=()=>Math.floor(dist/10)+got*25;
+
+function crash(){
+  st='over';beep(120,.5,'sawtooth',.15);vibr(300);
+  const sc=score();let nb='';
+  if(sc>S.best){S.best=sc;save();nb='<br>🏆 YENİ REKOR!'}
+  document.getElementById('res').innerHTML='Skor: <b>'+sc+'</b><br>Mesafe: '+Math.floor(dist/10)+' m &nbsp; 🪙 '+got+'<br>Rekor: '+S.best+nb;
+  show('over');
+}
+
+function draw(){
+  ctx.save();
+  if(st==='play'&&shake>0){ctx.translate((Math.random()-.5)*shake,(Math.random()-.5)*shake)}
+  // çimen
+  ctx.fillStyle='#2d6a4f';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#245a42';
+  for(let y=-80;y<H+80;y+=80){ctx.fillRect(8,y+sideOff,10,30);ctx.fillRect(W-20,y+sideOff+40,10,30)}
+  // yol
+  ctx.fillStyle='#3a3d45';ctx.fillRect(RL,0,RR-RL,H);
+  ctx.fillStyle='#f1f1f1';ctx.fillRect(RL,0,5,H);ctx.fillRect(RR-5,0,5,H);
+  ctx.fillStyle='#ffd166';
+  for(let y=-60;y<H+60;y+=60){ctx.fillRect(W/2-3,y+lineOff,6,32)}
+  coins.forEach(c=>{ctx.fillStyle='#ffd166';ctx.beginPath();ctx.arc(c.x,c.y,11,0,7);ctx.fill();
+    ctx.fillStyle='#e0a100';ctx.beginPath();ctx.arc(c.x,c.y,7,0,7);ctx.fill();ctx.fillStyle='#ffe9a0';ctx.fillRect(c.x-1.5,c.y-5,3,10)});
+  obs.forEach(o=>carSprite(o.x,o.y,o.w,o.h,o.c,0));
+  if(car)carSprite(car.x,car.y,car.w,car.h,S.color,car.tilt);
+  parts.forEach(p=>{ctx.globalAlpha=Math.max(0,p.l*2.5);ctx.fillStyle=p.c;ctx.fillRect(p.x-2,p.y-2,4,4)});ctx.globalAlpha=1;
+  // hız çizgileri
+  if(st==='play'&&speed>400){ctx.strokeStyle='rgba(255,255,255,.12)';ctx.lineWidth=2;
+    for(let i=0;i<6;i++){const x=RL+((i*53+dist*.3)%(RR-RL));ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke()}}
+  ctx.restore();
+}
+
+let last=performance.now();
+function loop(t){
+  const dt=Math.min(.05,(t-last)/1000);last=t;
+  if(st==='play')update(dt);
+  if(st==='menu'&&!car)reset();
+  draw();requestAnimationFrame(loop);
+}
+reset();requestAnimationFrame(loop);
+
+// Ekranlar
+function show(id){['menu','set','over'].forEach(s=>document.getElementById(s).classList.toggle('on',s===id));
+  document.getElementById('hud').style.display=id?'none':'flex';
+  document.getElementById('best').textContent='🏆 Rekor: '+S.best}
+function start(){reset();st='play';show(null);beep(500,.15)}
+document.getElementById('play').onclick=start;
+document.getElementById('again').onclick=start;
+document.getElementById('home').onclick=()=>{st='menu';reset();show('menu')};
+document.getElementById('setb').onclick=()=>{loadSet();show('set')};
+document.getElementById('back').onclick=()=>{save();show('menu')};
+document.getElementById('cal').onclick=()=>{
+  if(!hasSensor){document.getElementById('calmsg').textContent='⚠️ Sensör bulunamadı, dokunmatik kullan';return}
+  S.off=gamma;save();document.getElementById('calmsg').textContent='✔ Kalibre edildi!'};
+
+const cd=document.getElementById('colors');
+COLORS.forEach(c=>{const s=document.createElement('span');s.style.background=c;s.onclick=()=>{S.color=c;loadSet();save()};cd.appendChild(s)});
+function loadSet(){
+  mode.value=S.mode;sens.value=S.sens;inv.checked=S.inv;diff.value=S.diff;snd.checked=S.snd;vib.checked=S.vib;
+  [...cd.children].forEach((s,i)=>s.classList.toggle('sel',COLORS[i]===S.color))}
+mode.onchange=()=>{S.mode=mode.value;save()};
+sens.oninput=()=>{S.sens=+sens.value;save()};
+inv.onchange=()=>{S.inv=inv.checked;save()};
+diff.onchange=()=>{S.diff=diff.value;save()};
+snd.onchange=()=>{S.snd=snd.checked;save()};
+vib.onchange=()=>{S.vib=vib.checked;save()};
+loadSet();show('menu');
+</script></body></html>
